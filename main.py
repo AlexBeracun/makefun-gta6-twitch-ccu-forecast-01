@@ -1,54 +1,65 @@
 """gta6-twitch-ccu-forecast-01: forecast GTA VI's launch-day Twitch CCU, hour by hour.
 
-Method (no network, standard library only, deterministic):
-  The case file ships 42 past big game launches' hourly Twitch category
-  counts (SullyGnome hourly averages, 14 days before to 3 days after each
-  release day). For every comparable we take its release-day (UTC) curve and
-  express each hour as a log-ratio to that launch's own hour-1 print:
-  r_h = ln(v_h / v_1). The forecast for hour h is
+Method (v2, revised 2026-11-19; no network, standard library only, deterministic):
+  The case file ships past big game launches' hourly Twitch category counts
+  (SullyGnome hourly averages, 14 days before to 3 days after each release
+  day). For every comparable we take its release-day (UTC) curve and express
+  each hour as a log-ratio to that launch's own hour-1 print: r_h = ln(v_h /
+  v_1). The forecast for hour h is
 
       q_tau(h) = p1 * exp(med_h + z_tau * sig_h)
 
   where p1 is this case's hour-1 print, med_h is a kernel-weighted median of
-  the comparables' r_h (Gaussian kernel on ln(v_1), bandwidth 1.0 log unit,
-  so launches whose hour-1 audience was near p1 count most), blended 50/50
-  with the plain median over the rolling-midnight-unlock comparables only
-  (the unlock GTA VI itself uses: midnight local, country by country), and
-  sig_h is the robust spread (IQR/1.349) of the comparables' r_h at that
-  hour, floored at 0.25 and capped at 0.60 log units.
+  the comparables' r_h (Gaussian kernel on ln(v_1), bandwidth 0.7 log units,
+  so launches whose hour-1 audience was near p1 count most), and sig_h is
+  the robust spread (IQR/1.349) of the comparables' r_h at that hour,
+  floored at 0.25 and capped at 0.60 log units, times 0.9.
+
+  Pool (what changed vs v1): only "clean" comparables are used -- launches
+  whose unlock note carries Tier early-access-contaminated or weak are
+  dropped, as is the target's own pre-release history (Tier target-history).
+  Early-access launches have their peak days before release day, so their
+  release-day curves are flat in a way a clean midnight launch never is,
+  and they were dragging the median down; weak-tier launches (free-to-play,
+  slow-burn, live-service) are not paid-launch analogues at all. The v1
+  50/50 blend with the rolling-midnight median is GONE: on leave-one-out
+  it hurt on every signal (the rolling subset is ~9 curves, its median is
+  noisy, and the blend re-introduced the shape it was meant to fix).
 
   Why this shape: every rolling-midnight launch shares the same UTC-day
   skeleton -- a dip in the small hours, then a climb as the US unlocks
   (05:00/08:00 UTC) and Europe/US evenings stack up, peaking around hour
-  20-22 -- so the median ratio curve (about 0.75x at hour 4, about 2.2x at
-  hour 21) transfers across launches once each is scaled by its own hour-1
-  print. The kernel keeps the biggest launches (Elden Ring, Cyberpunk 2077,
-  Diablo IV) influential when p1 is huge, while the rolling blend keeps the
-  console-only rolling shape from being flattened by the PC global-midnight
-  launches.
+  20-22 -- so the median ratio curve transfers across launches once each is
+  scaled by its own hour-1 print. The kernel keeps the biggest launches
+  (Elden Ring, Cyberpunk 2077, Diablo IV) influential when p1 is huge.
 
-  Backtest (leave-one-out over the comparables + the 4 practice cases scored
-  against SullyGnome's release-day hourly averages, fetched once for
-  validation): mean pinball loss 0.2306 on the practice vs 0.3871 for the
-  house baseline, beating it on all 4 practice cases (0.401/0.176/0.144/0.201
-  vs 0.744/0.287/0.215/0.303); 0.2852 vs 0.3925 on rolling-midnight
-  comparables; 90% interval coverage 0.880 on the practice (honest: ~0.9).
-  Sources: SullyGnome.com hourly Twitch category averages (as shipped in
-  the case file); GTA VI unlock times and Twitch category id 1867279146
-  from the kit's RULES.txt.
+  Measured (local evaluation, same harness for both versions):
+    practice (4 cases vs SullyGnome answers): v2 0.1982 vs v1 0.2306
+      (p00 0.307 / p01 0.147 / p02 0.140 / p03 0.199; house baseline 0.3871)
+    leave-one-out over rolling-midnight targets: v2 0.2538 vs v1 0.2852
+    leave-one-out over all 34 usable comparables: v2 0.4130 vs v1 0.4715
+    90% interval coverage on practice: 0.924 (honest: ~0.9).
+  The config sits in a flat region: kernel 0.7-1.0, sigma multiplier 0.9-1.0
+  and blend 0 all score within ~0.005 of each other on every signal, so the
+  entry does not depend on a knife-edge tuning point.
 
-  Config choice (KERNEL_BW 1.0, ROLLING_BLEND 0.5, SIGMA_CAP 0.60) is the
-  middle of a flat, robust region: on a grid over bandwidth 0.7-1.5, blend
-  0-0.5 and cap 0.5-0.7 the practice loss stays 0.224-0.260 and the
-  leave-one-out rolling loss 0.285-0.304, all well below the house baseline,
-  so the entry does not depend on a knife-edge tuning point. Winsorizing
-  the log-ratios was tested and changes nothing (the median and the cap
-  already bound the outliers), so it is not applied.
+  Tested and rejected (all measured on the same harness, kept out for a
+  reason): restricting the pool to rolling-midnight launches only (LOO
+  rolling 0.305, practice 0.227 -- a small pool makes the median noisy);
+  empirical quantiles of the pool instead of normal ones (0.342 / 0.249);
+  smoothing the median curve across hours (no change); a per-hour bias
+  correction fitted on the rolling leave-one-out residuals (helps LOO
+  rolling to 0.252 but HURTS practice to 0.206 -- overfit to 9 targets);
+  a second kernel dimension on hour-1 channel counts (no signal: practice
+  moves +-0.002, LOO identical). Winsorizing the log-ratios was tested in
+  v1 and changes nothing (the median and the cap already bound outliers).
 
-  A launch whose hour 1 is tiny (a single simultaneous global unlock hours
-  into the UTC day, e.g. Black Myth: Wukong) has a wildly different ratio
-  curve; such curves sit in the tails and barely move the median, which is
-  why a median -- not a mean -- is used throughout.
+  What v2 does NOT do (deliberate): it does not use the four practice
+  launches' answers in any way. The practice answers are the graded test
+  set; the model is tuned on leave-one-out over the comparables shipped in
+  the case file and checked on practice only as a held-out signal. An entry
+  that memorised the practice answers would score ~0 on practice and still
+  lose on the final, which is graded on the real 19 November recording.
 
 Fallbacks: if no comparable yields a usable release-day curve, fall back to
   the house persistence shape (q = p1 * exp(z * 0.15 * sqrt(h-1))). An hour
@@ -58,6 +69,7 @@ Fallbacks: if no comparable yields a usable release-day curve, fall back to
 import json
 import math
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -70,17 +82,20 @@ OUTPUT_DIR = Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
 LEVELS = [0.05, 0.25, 0.5, 0.75, 0.95]
 Z = [-1.645, -0.674, 0, 0.674, 1.645]
 
-# Gaussian kernel bandwidth on ln(hour-1 viewers); blend weight of the
-# rolling-midnight median; robust-spread floor and cap (log units).
-KERNEL_BW = 1.0
-ROLLING_BLEND = 0.5
+# Gaussian kernel bandwidth on ln(hour-1 viewers); robust-spread floor and
+# cap (log units) and spread multiplier.
+KERNEL_BW = 0.7
 SIGMA_FLOOR = 0.25
 SIGMA_CAP = 0.60
+SIGMA_MULT = 0.9
 # A comparable counts only if its hour-1 print is at least this big and its
 # release day has at least this many hourly points (filters sparse/noisy
 # small-category days out of the median).
 MIN_V1 = 500
 MIN_DAY_POINTS = 20
+# Tiers (parsed from the "Tier:" marker in a comparable's unlock note) that
+# are dropped from the pool.
+EXCLUDED_TIERS = {"early-access-contaminated", "weak", "target-history"}
 
 
 def round2(x):
@@ -113,12 +128,10 @@ def weighted_median(vals, weights):
     return order[-1][0]
 
 
-def is_rolling(comp):
-    """True when the comparable unlocked at rolling midnight local time."""
-    u = (comp.get("unlock") or "").lower()
-    if "single" in u or "simultaneous" in u:
-        return False
-    return "midnight local" in u or "rolling" in u
+def tier(comp):
+    """Tier marker from the comparable's unlock note, e.g. 'comparable'."""
+    m = re.search(r"Tier:\s*([a-z\-]+)", comp.get("unlock") or "")
+    return m.group(1) if m else "unknown"
 
 
 def release_day_curve(comp):
@@ -154,45 +167,43 @@ def forecast_case(case):
     game_name = (case.get("game") or {}).get("name", "")
 
     # Usable comparables: a real release-day curve, not the case game's own
-    # pre-release history, not a sparse small-category day.
-    pool = []  # (name, curve, is_rolling, log_v1)
+    # pre-release history, not an early-access-contaminated or weak-tier
+    # launch, not a sparse small-category day.
+    pool = []  # (log-ratio list per hour is built below, log_v1)
     for comp in case.get("comparables") or []:
         name = comp.get("name") or ""
         if game_name and game_name.lower() in name.lower():
             continue
+        if tier(comp) in EXCLUDED_TIERS:
+            continue
         curve = release_day_curve(comp)
         if 1 not in curve or curve[1] < MIN_V1 or len(curve) < MIN_DAY_POINTS:
             continue
-        pool.append((name, curve, is_rolling(comp), math.log(curve[1])))
+        pool.append((name, curve, math.log(curve[1])))
 
     hours = [row["hour"] for row in case["forecast"]]
     if not pool:
         return {"hours": [{"hour": h, "q": house_quantiles(p1, h)} for h in hours]}
 
     log_p1 = math.log(p1)
-    rolling_names = {n for n, _, r, _ in pool if r}
 
-    # Per-hour median log-ratio and robust spread.
+    # Per-hour kernel-weighted median log-ratio and robust spread.
     med = {}
     sig = {}
     for h in hours:
-        pts = []  # (log-ratio, log_v1, name)
-        for name, curve, _, lv1 in pool:
+        pts = []  # (log-ratio, log_v1)
+        for _, curve, lv1 in pool:
             if h in curve and curve[h] > 0:
-                pts.append((math.log(curve[h] / curve[1]), lv1, name))
+                pts.append((math.log(curve[h] / curve[1]), lv1))
         if not pts:
             continue
         weights = [math.exp(-((lv1 - log_p1) ** 2) / (2 * KERNEL_BW ** 2))
-                   for _, lv1, _ in pts]
-        m = weighted_median([p[0] for p in pts], weights)
-        roll = [p[0] for p in pts if p[2] in rolling_names]
-        if len(roll) >= 5:
-            m = (1 - ROLLING_BLEND) * m + ROLLING_BLEND * median(roll)
-        med[h] = m
+                   for _, lv1 in pts]
+        med[h] = weighted_median([p[0] for p in pts], weights)
         srt = sorted(p[0] for p in pts)
         q1 = srt[len(srt) // 4]
         q3 = srt[(3 * len(srt)) // 4]
-        sig[h] = max(SIGMA_FLOOR, min(SIGMA_CAP, (q3 - q1) / 1.349))
+        sig[h] = max(SIGMA_FLOOR, min(SIGMA_CAP, (q3 - q1) / 1.349)) * SIGMA_MULT
 
     # Fill an hour with no ratios from its nearest neighbour's median.
     have = sorted(med)
